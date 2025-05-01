@@ -11,15 +11,36 @@ function App() {
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
 
-  // 加载会话列表
+  /**
+   * 加载会话列表，并处理会话选择
+   * 会话选择策略：
+   * 1. 优先保持用户当前选择的会话
+   * 2. 如果当前没有选择会话，才会选择第一个会话
+   * 3. 如果当前选择的会话已被删除，才会切换到其他会话
+   * 这样避免了轮询时强制切换到最新会话的问题
+   */
   const loadSessions = async () => {
     try {
       setLoading(true);
       const data = await sessionsApi.getAll();
+      
+      // 在更新会话列表前保存当前会话ID，避免轮询更新后丢失选择
+      const previousSessionId = currentSession;
+      
       setSessions(data);
       
-      if (data.length > 0 && !currentSession) {
-        setCurrentSession(data[0].id);
+      // 仅在以下情况设置当前会话:
+      // 1. 如果没有当前选择的会话，并且有可用会话
+      // 2. 如果当前选择的会话不再存在于更新后的会话列表中
+      if (data.length > 0) {
+        if (!previousSessionId) {
+          // 没有选择任何会话时，选择第一个
+          setCurrentSession(data[0].id);
+        } else if (!data.some(session => session.id === previousSessionId)) {
+          // 如果之前选择的会话已被删除，选择新的第一个会话
+          setCurrentSession(data[0].id);
+        }
+        // 其他情况保持当前选择不变，确保轮询不会干扰用户的会话选择
       }
       
       setError(null);
@@ -32,9 +53,11 @@ function App() {
   };
 
   useEffect(() => {
+    // 初次加载会话列表
     loadSessions();
     
-    // 定期刷新会话列表
+    // 定期刷新会话列表，不影响用户当前选择的会话
+    // 这允许在保持当前会话的同时，查看其他客户端可能创建的新会话
     const interval = setInterval(loadSessions, 10000);
     return () => clearInterval(interval);
   }, []);
@@ -44,6 +67,7 @@ function App() {
     try {
       const newSession = await sessionsApi.create();
       setSessions([newSession, ...sessions]);
+      // 创建新会话后自动选择它
       setCurrentSession(newSession.id);
     } catch (err) {
       console.error('创建会话失败:', err);
@@ -63,6 +87,7 @@ function App() {
       await sessionsApi.delete(id);
       setSessions(sessions.filter(s => s.id !== id));
       
+      // 如果删除的是当前选中的会话，则选择另一个会话
       if (currentSession === id) {
         setCurrentSession(sessions.length > 1 ? 
           sessions.find(s => s.id !== id)?.id || null : 
