@@ -2,19 +2,11 @@ import React, { useRef, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { nord } from 'react-syntax-highlighter/dist/esm/styles/prism';
-import { Message } from '../types';
+import { Message, MessageContent } from '../types';
 
 interface ChatMessagesProps {
   messages: Message[];
   streamingMessage: string | null;
-}
-
-// 定义代码块组件的类型
-interface CodeProps {
-  node?: any;
-  inline?: boolean;
-  className?: string;
-  children: React.ReactNode;
 }
 
 const ChatMessages: React.FC<ChatMessagesProps> = ({ messages, streamingMessage }) => {
@@ -41,29 +33,45 @@ const ChatMessages: React.FC<ChatMessagesProps> = ({ messages, streamingMessage 
   // 渲染消息内容，支持Markdown
   const renderContent = (content: string) => {
     return (
-      <ReactMarkdown
-        components={{
-          code({ node, inline, className, children, ...props }: CodeProps) {
-            const match = /language-(\w+)/.exec(className || '');
-            return !inline && match ? (
-              <SyntaxHighlighter
-                style={nord}
-                language={match[1]}
-                PreTag="div"
-                {...props}
-              >
-                {String(children).replace(/\n$/, '')}
-              </SyntaxHighlighter>
-            ) : (
-              <code className={`bg-gray-100 dark:bg-gray-800 px-1 rounded ${className}`} {...props}>
-                {children}
-              </code>
-            );
-          }
-        }}
-      >
+      <ReactMarkdown>
         {content}
       </ReactMarkdown>
+    );
+  };
+
+  // 渲染复杂消息内容（可能包含图片）
+  const renderComplexContent = (content: MessageContent[]) => {
+    return (
+      <div>
+        {content.map((item, index) => {
+          if (item.type === 'text' && item.text) {
+            return (
+              <div key={index} className="mb-2">
+                {renderContent(item.text)}
+              </div>
+            );
+          } else if (item.type === 'image_url' && item.image_url) {
+            return (
+              <div key={index} className="my-3">
+                <div className="relative group">
+                  <img 
+                    src={item.image_url.url} 
+                    alt="用户上传的图片" 
+                    className="max-w-full max-h-64 rounded-lg shadow-sm cursor-pointer"
+                    onClick={() => window.open(item.image_url!.url, '_blank')}
+                  />
+                  <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-10 transition-all duration-200 flex items-center justify-center rounded-lg">
+                    <div className="opacity-0 group-hover:opacity-100 bg-black bg-opacity-50 text-white px-2 py-1 rounded text-xs">
+                      点击查看原图
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          }
+          return null;
+        })}
+      </div>
     );
   };
 
@@ -72,8 +80,10 @@ const ChatMessages: React.FC<ChatMessagesProps> = ({ messages, streamingMessage 
     <div className="flex justify-end mb-4">
       <div className="flex flex-col max-w-[75%]">
         <div className="bg-blue-600 text-white p-3 rounded-lg rounded-tr-none shadow">
-          <div className="prose prose-sm prose-invert max-w-none">
-            {renderContent(message.content)}
+          <div className="prose prose-sm prose-invert max-w-none text-left">
+            {typeof message.content === 'string' 
+              ? renderContent(message.content)
+              : renderComplexContent(message.content as MessageContent[])}
           </div>
         </div>
         <span className="text-xs text-gray-500 mt-1 self-end">
@@ -88,8 +98,10 @@ const ChatMessages: React.FC<ChatMessagesProps> = ({ messages, streamingMessage 
     <div className="flex justify-start mb-4">
       <div className="flex flex-col max-w-[75%]">
         <div className="bg-gray-100 p-3 rounded-lg rounded-tl-none shadow">
-          <div className="prose prose-sm max-w-none">
-            {renderContent(message.content)}
+          <div className="prose prose-sm max-w-none text-left">
+            {typeof message.content === 'string'
+              ? renderContent(message.content)
+              : renderComplexContent(message.content as MessageContent[])}
           </div>
         </div>
         <span className="text-xs text-gray-500 mt-1">
@@ -104,7 +116,7 @@ const ChatMessages: React.FC<ChatMessagesProps> = ({ messages, streamingMessage 
     <div className="flex justify-start mb-4">
       <div className="flex flex-col max-w-[75%]">
         <div className="p-3">
-          <div className="prose prose-sm max-w-none">
+          <div className="prose prose-sm max-w-none text-left">
             {streamingMessage && renderContent(streamingMessage)}
             <span className="inline-block ml-1 animate-pulse">▋</span>
           </div>
@@ -123,6 +135,7 @@ const ChatMessages: React.FC<ChatMessagesProps> = ({ messages, streamingMessage 
         <div className="bg-gray-100 p-3 rounded-lg rounded-tl-none shadow">
           <div className="prose prose-sm max-w-none">
             <p>👋 你好！我是AI助手，有什么可以帮你的？</p>
+            <p>现在支持上传图片功能，点击左下角图标上传图片。</p>
           </div>
         </div>
         <span className="text-xs text-gray-500 mt-1">

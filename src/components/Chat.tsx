@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { v4 as uuidv4 } from 'uuid';
 import ChatInput from './ChatInput';
 import ChatMessages from './ChatMessages';
-import { Message } from '../types';
+import { Message, MessageContent } from '../types';
 import { messagesApi, agentApi } from '../utils/api';
 
 interface ChatProps {
@@ -39,13 +39,32 @@ const Chat: React.FC<ChatProps> = ({ sessionId }) => {
   }, [sessionId]);
 
   // 处理发送消息
-  const handleSendMessage = async (content: string) => {
+  const handleSendMessage = async (content: string, imageUrl?: string) => {
     if (!sessionId) return;
+    
+    // 准备消息内容
+    let messageContent: string | MessageContent[];
+    
+    if (imageUrl) {
+      // 如果有图片，使用新的消息格式
+      messageContent = [
+        { type: 'text', text: content || '请描述这张图片' },
+        { 
+          type: 'image_url', 
+          image_url: { 
+            url: imageUrl 
+          } 
+        }
+      ];
+    } else {
+      // 纯文本消息
+      messageContent = content;
+    }
     
     const userMessage: Message = {
       id: uuidv4(),
       role: 'user',
-      content,
+      content: messageContent,
       createdAt: new Date(),
     };
 

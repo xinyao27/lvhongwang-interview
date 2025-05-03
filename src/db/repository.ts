@@ -57,20 +57,41 @@ export const sessions = {
 export const messages = {
   // 获取会话的所有消息
   getBySessionId: async (sessionId: string) => {
-    return await db.select()
+    const dbMessages = await db.select()
       .from(chatMessages)
       .where(eq(chatMessages.sessionId, sessionId))
       .orderBy(asc(chatMessages.createdAt));
+    
+    // 处理每条消息的内容，尝试解析JSON格式的内容
+    return dbMessages.map(msg => {
+      let content = msg.content;
+      // 尝试解析可能的JSON内容
+      try {
+        if (content.startsWith('[') || content.startsWith('{')) {
+          const parsed = JSON.parse(content);
+          content = parsed;
+        }
+      } catch (e) {
+        // 解析失败，保持原始内容不变
+        console.error('解析消息内容失败:', e);
+      }
+      
+      return {
+        ...msg,
+        content
+      };
+    });
   },
 
   // 创建消息
-  create: async (sessionId: string, role: string, content: string) => {
+  create: async (sessionId: string, role: string, content: string | any) => {
     const messageId = uuidv4();
     const newMessage: NewChatMessage = {
       id: messageId,
       sessionId,
       role,
-      content,
+      // 如果内容不是字符串，则将其序列化为JSON字符串
+      content: typeof content === 'string' ? content : JSON.stringify(content),
       createdAt: new Date(),
     };
     
@@ -99,11 +120,16 @@ export const messages = {
         createdAt = new Date();
       }
       
+      // 序列化非字符串内容
+      const content = typeof msg.content === 'string' 
+        ? msg.content 
+        : JSON.stringify(msg.content);
+      
       return {
         id: msg.id || uuidv4(),
         sessionId,
         role: msg.role,
-        content: msg.content,
+        content,
         createdAt: createdAt,
       };
     });

@@ -14,7 +14,7 @@ const MessageItem: React.FC<MessageItemProps> = ({ message }) => {
       {/* 用户消息 */}
       {isUser ? (
         <div className="message user-message max-w-[70%] ml-auto rounded-[15px] rounded-br-[5px] px-5 py-4 bg-[#007bff] text-white shadow-sm">
-          <div className="prose prose-invert max-w-none">
+          <div className="prose prose-invert max-w-none text-left">
             <ReactMarkdown>
               {message.content}
             </ReactMarkdown>
@@ -23,7 +23,7 @@ const MessageItem: React.FC<MessageItemProps> = ({ message }) => {
       ) : (
         /* AI消息 */
         <div className="message ai-message max-w-[70%] mr-auto rounded-[15px] rounded-bl-[5px] px-5 py-4 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 text-gray-800 dark:text-white shadow-sm">
-          <div className="prose dark:prose-invert max-w-none">
+          <div className="prose dark:prose-invert max-w-none text-left">
             <ReactMarkdown>
               {message.content}
             </ReactMarkdown>

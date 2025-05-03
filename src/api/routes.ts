@@ -5,6 +5,18 @@ import { v4 as uuidv4 } from 'uuid';
 import { sessions, messages } from '../db/repository';
 import { generateChatResponse } from '../utils/ai';
 import { Message } from '../types';
+import COS from 'cos-nodejs-sdk-v5';
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
+import formidable from 'formidable';
+import { cosConfig } from '../utils/config';
+
+// 创建COS实例
+const cos = new COS({
+  SecretId: cosConfig.SecretId,
+  SecretKey: cosConfig.SecretKey,
+});
 
 // 创建Hono应用
 const app = new Hono();
@@ -178,6 +190,8 @@ app.post('/agent', async (c) => {
       return c.json({ error: '无效的消息格式' }, { status: 400 });
     }
     
+    console.log('收到Agent请求，消息数量:', reqMessages.length);
+    
     // 保存会话和消息到数据库
     let chatSessionId = sessionId;
     
@@ -206,10 +220,15 @@ app.post('/agent', async (c) => {
       return {
         id: msg.id || uuidv4(),
         role: msg.role,
-        content: msg.content,
+        content: msg.content, // 内容可以是字符串或对象，由数据库代码处理序列化
         createdAt: createdAt,
       };
     });
+    
+    console.log('处理Agent请求，格式化后的消息示例:', 
+                formattedMessages.length > 0 
+                ? JSON.stringify(formattedMessages[formattedMessages.length - 1]) 
+                : '无消息');
     
     // 检查消息是否已存在并仅保存新消息
     const existingMessages = await messages.getBySessionId(chatSessionId);
@@ -223,8 +242,18 @@ app.post('/agent', async (c) => {
       await messages.createMany(chatSessionId, newMessages);
     }
     
+    // 在API请求中，确保所有消息内容都是字符串，这对OpenAI API是必要的
+    const apiMessages = formattedMessages.map(msg => {
+      if (typeof msg.content === 'string') {
+        return msg;
+      } else {
+        // 如果msg.content是数组，则返回原始对象，让OpenAI API处理
+        return msg;
+      }
+    });
+    
     // 获取AI响应并直接返回
-    const aiStream = await generateChatResponse(formattedMessages);
+    const aiStream = await generateChatResponse(apiMessages);
     
     // 手动设置响应头
     c.header('Content-Type', 'text/plain; charset=utf-8');
@@ -262,9 +291,21 @@ app.post('/agent', async (c) => {
               if (session && !session.title) {
                 const userMsg = formattedMessages.find(m => m.role === 'user');
                 if (userMsg) {
-                  const title = userMsg.content.length > 20 
-                    ? userMsg.content.substring(0, 20) + '...' 
-                    : userMsg.content;
+                  // 提取文本内容作为标题
+                  let titleText = '';
+                  if (typeof userMsg.content === 'string') {
+                    titleText = userMsg.content;
+                  } else if (Array.isArray(userMsg.content)) {
+                    // 尝试从复杂消息中提取文本部分
+                    const textContent = userMsg.content.find(c => c.type === 'text');
+                    if (textContent && textContent.text) {
+                      titleText = textContent.text;
+                    }
+                  }
+                  
+                  const title = titleText.length > 20 
+                    ? titleText.substring(0, 20) + '...' 
+                    : titleText;
                   await sessions.update(chatSessionId, title);
                 }
               }
@@ -279,6 +320,84 @@ app.post('/agent', async (c) => {
   } catch (error) {
     console.error('Agent处理失败:', error);
     return c.json({ error: '处理请求失败' }, { status: 500 });
+  }
+});
+
+// 图片上传API
+app.post('/upload', async (c) => {
+  console.log('收到图片上传请求');
+  
+  try {
+    // 手动处理multipart/form-data
+    const formData = await c.req.formData();
+    console.log('解析表单数据成功, 字段:', Array.from(formData.keys()));
+
+    // 获取图片文件
+    const image = formData.get('image') as File | null;
+    
+    if (!image) {
+      console.error('未找到图片文件');
+      return c.json({ error: '未找到图片文件' }, { status: 400 });
+    }
+    
+    console.log('收到图片文件:', image.name, image.type, image.size);
+    
+    // 检查文件类型
+    if (!image.type.startsWith('image/')) {
+      console.error('无效的文件类型:', image.type);
+      return c.json({ error: '只能上传图片文件' }, { status: 400 });
+    }
+    
+    // 检查文件大小（限制为5MB）
+    const MAX_SIZE = 5 * 1024 * 1024; // 5MB
+    if (image.size > MAX_SIZE) {
+      console.error('文件太大:', image.size);
+      return c.json({ error: '图片大小不能超过5MB' }, { status: 400 });
+    }
+    
+    try {
+      // 读取文件内容
+      const buffer = await image.arrayBuffer();
+      console.log('读取图片文件成功, 大小:', buffer.byteLength);
+      
+      // 生成唯一文件名
+      const timestamp = Date.now();
+      const randomStr = Math.random().toString(36).substring(2, 8);
+      const fileName = `${cosConfig.Folder}/${timestamp}-${randomStr}-${image.name}`;
+      
+      console.log('上传到COS, Bucket:', cosConfig.Bucket, 'Region:', cosConfig.Region, 'Key:', fileName);
+    
+      // 上传到腾讯云COS
+      return new Promise((resolve) => {
+        cos.putObject({
+          Bucket: cosConfig.Bucket,
+          Region: cosConfig.Region,
+          Key: fileName,
+          Body: Buffer.from(buffer),
+          ContentType: image.type,
+        }, (err, data) => {
+          if (err) {
+            console.error('上传到腾讯云COS失败:', err, JSON.stringify(err));
+            resolve(c.json({ error: '上传图片失败: ' + err.message }, { status: 500 }));
+          } else {
+            console.log('上传到COS成功:', data);
+            // 构建文件URL并返回
+            const imageUrl = `https://${cosConfig.Bucket}.cos.${cosConfig.Region}.myqcloud.com/${fileName}`;
+            console.log('生成的图片URL:', imageUrl);
+            resolve(c.json({ 
+              success: true, 
+              imageUrl 
+            }));
+          }
+        });
+      });
+    } catch (error) {
+      console.error('处理图片文件失败:', error);
+      return c.json({ error: '处理图片文件失败' }, { status: 500 });
+    }
+  } catch (error) {
+    console.error('处理图片上传请求失败:', error);
+    return c.json({ error: '图片上传失败: ' + (error instanceof Error ? error.message : '未知错误') }, { status: 500 });
   }
 });
 

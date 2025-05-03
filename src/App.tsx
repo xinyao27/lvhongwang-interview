@@ -11,6 +11,7 @@ function App() {
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
 
+  console.log("currentSession", currentSession);
   /**
    * 加载会话列表，并处理会话选择
    * 会话选择策略：
@@ -21,27 +22,40 @@ function App() {
    */
   const loadSessions = async () => {
     try {
-      setLoading(true);
+      // 仅在首次加载时设置loading为true，避免重复加载时的抖动
+      if (sessions.length === 0) {
+        setLoading(true);
+      }
+      
       const data = await sessionsApi.getAll();
       
-      // 在更新会话列表前保存当前会话ID，避免轮询更新后丢失选择
-      const previousSessionId = currentSession;
-      
-      setSessions(data);
-      
-      // 仅在以下情况设置当前会话:
-      // 1. 如果没有当前选择的会话，并且有可用会话
-      // 2. 如果当前选择的会话不再存在于更新后的会话列表中
-      if (data.length > 0) {
-        if (!previousSessionId) {
-          // 没有选择任何会话时，选择第一个
-          setCurrentSession(data[0].id);
-        } else if (!data.some(session => session.id === previousSessionId)) {
-          // 如果之前选择的会话已被删除，选择新的第一个会话
-          setCurrentSession(data[0].id);
+      // 优化状态更新，仅当数据实际变化时才更新状态
+      setSessions(prevSessions => {
+        // 检查会话列表是否有实际变化
+        if (JSON.stringify(prevSessions) === JSON.stringify(data)) {
+          return prevSessions; // 如果没有变化，保持原状态，避免重绘
         }
-        // 其他情况保持当前选择不变，确保轮询不会干扰用户的会话选择
-      }
+        return data;
+      });
+      
+      setCurrentSession(prevSession => {
+        console.log("previousSessionId", prevSession);
+        
+        // 仅在以下情况设置当前会话:
+        // 1. 如果没有当前选择的会话，并且有可用会话
+        // 2. 如果当前选择的会话不再存在于更新后的会话列表中
+        if (data.length > 0) {
+          if (!prevSession) {
+            // 没有选择任何会话时，选择第一个
+            return data[0].id;
+          } else if (!data.some(session => session.id === prevSession)) {
+            // 如果之前选择的会话已被删除，选择新的第一个会话
+            return data[0].id;
+          }
+          // 其他情况保持当前选择不变，确保轮询不会干扰用户的会话选择
+        }
+        return prevSession;
+      });
       
       setError(null);
     } catch (err) {
@@ -57,8 +71,8 @@ function App() {
     loadSessions();
     
     // 定期刷新会话列表，不影响用户当前选择的会话
-    // 这允许在保持当前会话的同时，查看其他客户端可能创建的新会话
-    const interval = setInterval(loadSessions, 10000);
+    // 减少轮询频率，避免频繁重绘
+    const interval = setInterval(loadSessions, 30000); // 增加到30秒
     return () => clearInterval(interval);
   }, []);
 
@@ -137,57 +151,84 @@ function App() {
           </button>
         </div>
         
-        {loading ? (
-          <div className="p-4 text-center text-gray-500">
-            <svg className="animate-spin h-5 w-5 mx-auto mb-2" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-            </svg>
-            加载中...
-          </div>
-        ) : error ? (
-          <div className="p-4 text-center text-red-500">
-            {error}
-          </div>
-        ) : sessions.length === 0 ? (
-          <div className="text-gray-500 text-sm p-2 text-center">
-            暂无聊天记录
-            <button 
-              onClick={createNewSession}
-              className="mt-2 w-full px-3 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600 text-sm"
-            >
-              开始新对话
-            </button>
-          </div>
-        ) : (
-          <div className="overflow-y-auto max-h-[calc(100vh-120px)]">
-            {sessions.map(session => (
-              <div 
-                key={session.id}
-                className={`history-item relative group ${session.id === currentSession ? 'bg-blue-100 dark:bg-blue-900' : ''}`}
-                onClick={() => setCurrentSession(session.id)}
+        <div className="overflow-y-auto max-h-[calc(100vh-120px)] min-h-[300px]">
+          {/* 仅在有错误时显示错误信息 */}
+          {error && (
+            <div className="p-4 text-left text-red-500">
+              {error}
+            </div>
+          )}
+          
+          {/* 首次加载且没有会话时显示加载状态 */}
+          {loading && sessions.length === 0 && !error && (
+            <div className="p-4 text-left text-gray-500">
+              <div className="flex items-center">
+                <svg className="animate-spin h-5 w-5 mr-2" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                加载中...
+              </div>
+            </div>
+          )}
+          
+          {/* 没有会话且不在加载中时显示空状态 */}
+          {sessions.length === 0 && !loading && !error && (
+            <div className="text-gray-500 text-sm p-4 text-left">
+              暂无聊天记录
+              <button 
+                onClick={createNewSession}
+                className="mt-2 w-full px-3 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600 text-sm"
               >
-                <div className="pr-6">
-                  <div className="font-medium truncate">
-                    {session.title || '新对话'}
+                开始新对话
+              </button>
+            </div>
+          )}
+          
+          {/* 会话列表 - 无论是否在加载中，只要有会话就显示 */}
+          {sessions.length > 0 && (
+            <>
+              {sessions.map(session => (
+                <div 
+                  key={session.id}
+                  className={`history-item relative group text-left ${session.id === currentSession ? 'bg-blue-100 dark:bg-blue-900' : ''}`}
+                  onClick={() => setCurrentSession(session.id)}
+                >
+                  <div className="pr-6 text-left">
+                    <div className="font-medium truncate text-left">
+                      {session.title || '新对话'}
+                    </div>
+                    <div className="text-xs text-gray-500 mt-1 text-left">
+                      {formatDate(new Date(session.updatedAt))}
+                    </div>
                   </div>
-                  <div className="text-xs text-gray-500 mt-1">
-                    {formatDate(new Date(session.updatedAt))}
+                  
+                  <button 
+                    onClick={(e) => deleteSession(session.id, e)}
+                    className="absolute right-2 top-1/2 transform -translate-y-1/2 opacity-0 group-hover:opacity-100 text-gray-400 hover:text-red-500"
+                  >
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
+                    </svg>
+                  </button>
+                </div>
+              ))}
+              
+              {/* 仅在加载中且有会话时显示小型加载指示器 */}
+              {loading && (
+                <div className="py-2 text-gray-400 text-xs px-4 text-left">
+                  <div className="flex items-center">
+                    <svg className="animate-spin h-3 w-3 mr-1" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                    同步中
                   </div>
                 </div>
-                
-                <button 
-                  onClick={(e) => deleteSession(session.id, e)}
-                  className="absolute right-2 top-1/2 transform -translate-y-1/2 opacity-0 group-hover:opacity-100 text-gray-400 hover:text-red-500"
-                >
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
-                  </svg>
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
+              )}
+            </>
+          )}
+        </div>
       </div>
 
       {/* 主聊天区域 */}
