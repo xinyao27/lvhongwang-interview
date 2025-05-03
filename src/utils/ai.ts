@@ -1,15 +1,17 @@
 import OpenAI from "openai";
 import { Message, MessageContent } from "../types";
 
+// 创建OpenAI实例
 const openai = new OpenAI({
   baseURL: "https://api.deepseek.com",
   apiKey: "sk-9721a61d9f0644c7b4e8c9f7ba78a88d",
   dangerouslyAllowBrowser: true,
 });
 
-export async function generateChatResponse(messages: Message[]) {
-  // 根据Deepseek API要求格式化消息
-  const formattedMessages = messages.map((message) => {
+// 格式化消息以适应API要求
+function formatMessagesForAI(messages: Message[]) {
+  // 根据API要求格式化消息
+  return messages.map((message) => {
     // 对于字符串内容，保持简单格式
     if (typeof message.content === "string") {
       return {
@@ -36,7 +38,7 @@ export async function generateChatResponse(messages: Message[]) {
         .filter(Boolean)
         .join("\n\n");
 
-      // 由于Deepseek API可能不支持图片消息格式，我们将其转换为纯文本
+      // 由于API可能不支持图片消息格式，我们将其转换为纯文本
       return {
         role: message.role,
         content: combinedContent,
@@ -49,7 +51,11 @@ export async function generateChatResponse(messages: Message[]) {
       content: "",
     };
   });
+}
 
+// 使用标准方式创建流式聊天响应
+export async function generateChatResponse(messages: Message[]) {
+  const formattedMessages = formatMessagesForAI(messages);
   console.log("发送到AI的消息格式:", JSON.stringify(formattedMessages));
 
   const stream = await openai.chat.completions.create({
@@ -62,6 +68,7 @@ export async function generateChatResponse(messages: Message[]) {
   return stream;
 }
 
+// 获取函数调用结果
 export async function getFunctionResponse(functionName: string, args: any) {
   switch (functionName) {
     case "getCurrentTime":

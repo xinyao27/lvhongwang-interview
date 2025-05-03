@@ -127,7 +127,8 @@ export const messagesApi = {
 // Agent API - 流式响应
 export const agentApi = {
   // 发送消息并返回流式响应
-  sendMessage: async (messages: Message[], sessionId?: string): Promise<ReadableStream> => {
+  sendMessage: async (messages: Message[], sessionId?: string): Promise<ReadableStream<Uint8Array>> => {
+    // 使用fetch API发送POST请求
     const response = await fetch(`${API_BASE_URL}/agent`, {
       method: 'POST',
       headers: {
@@ -148,6 +149,52 @@ export const agentApi = {
       throw new Error('服务器返回的不是流式响应');
     }
     
-    return response.body;
+    // 转换接收到的数据流
+    return new ReadableStream({
+      async start(controller) {
+        try {
+          // 这里我们已经检查了response.body不为null
+          const reader = response.body!.getReader();
+          const decoder = new TextDecoder();
+          
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            
+            // 解析SSE格式的消息
+            const text = decoder.decode(value, { stream: true });
+            const lines = text.split('\n\n');
+            
+            for (const line of lines) {
+              if (line.startsWith('data: ')) {
+                const data = line.substring(6); // 去掉 "data: " 前缀
+                
+                if (data === '[DONE]') {
+                  // 流结束
+                  controller.close();
+                  return;
+                }
+                
+                try {
+                  // 解析JSON数据
+                  const parsed = JSON.parse(data);
+                  if (parsed.content) {
+                    // 将内容推送到输出流
+                    controller.enqueue(new TextEncoder().encode(parsed.content));
+                  }
+                } catch (error) {
+                  console.error('解析SSE数据失败:', error, data);
+                }
+              }
+            }
+          }
+          
+          controller.close();
+        } catch (error) {
+          console.error('处理流数据失败:', error);
+          controller.error(error);
+        }
+      }
+    });
   },
 }; 

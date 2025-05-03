@@ -181,147 +181,182 @@ app
     }
   });
 
-// Agent API路由
-app.post('/agent', async (c) => {
-  try {
-    const { messages: reqMessages, sessionId } = await c.req.json();
-    
-    if (!reqMessages || !Array.isArray(reqMessages)) {
-      return c.json({ error: '无效的消息格式' }, { status: 400 });
+// Agent API路由 - 支持POST和GET请求
+app
+  .post('/agent', async (c) => {
+    try {
+      const { messages: reqMessages, sessionId } = await c.req.json();
+      return await handleAgentRequest(c, reqMessages, sessionId);
+    } catch (error) {
+      console.error('Agent处理失败:', error);
+      return c.json({ error: '处理请求失败' }, { status: 500 });
     }
-    
-    console.log('收到Agent请求，消息数量:', reqMessages.length);
-    
-    // 保存会话和消息到数据库
-    let chatSessionId = sessionId;
-    
-    if (!chatSessionId) {
-      // 创建新会话
-      const newSession = await sessions.create();
-      chatSessionId = newSession.id;
-    } else {
-      // 验证会话是否存在
-      const existingSession = await sessions.getById(chatSessionId);
-      if (!existingSession) {
-        return c.json({ error: '指定的会话不存在' }, { status: 404 });
-      }
-    }
-    
-    // 格式化消息，确保日期是Date对象
-    const formattedMessages: Message[] = reqMessages.map((msg: any) => {
-      // 确保创建日期是有效的Date对象
-      let createdAt: Date;
-      if (msg.createdAt) {
-        createdAt = new Date(msg.createdAt);
-      } else {
-        createdAt = new Date();
+  })
+  .get('/agent', async (c) => {
+    try {
+      // 从查询参数中获取数据
+      const dataParam = c.req.query('data');
+      
+      if (!dataParam) {
+        return c.json({ error: '未提供数据参数' }, { status: 400 });
       }
       
-      return {
-        id: msg.id || uuidv4(),
-        role: msg.role,
-        content: msg.content, // 内容可以是字符串或对象，由数据库代码处理序列化
-        createdAt: createdAt,
-      };
-    });
-    
-    console.log('处理Agent请求，格式化后的消息示例:', 
-                formattedMessages.length > 0 
-                ? JSON.stringify(formattedMessages[formattedMessages.length - 1]) 
-                : '无消息');
-    
-    // 检查消息是否已存在并仅保存新消息
-    const existingMessages = await messages.getBySessionId(chatSessionId);
-    const existingIds = new Set(existingMessages.map(msg => msg.id));
+      try {
+        const { messages: reqMessages, sessionId } = JSON.parse(decodeURIComponent(dataParam));
+        return await handleAgentRequest(c, reqMessages, sessionId);
+      } catch (parseError) {
+        console.error('解析查询参数失败:', parseError);
+        return c.json({ error: '解析请求数据失败' }, { status: 400 });
+      }
+    } catch (error) {
+      console.error('Agent处理失败:', error);
+      return c.json({ error: '处理请求失败' }, { status: 500 });
+    }
+  });
 
-    // 只保存数据库中不存在的消息
-    const newMessages = formattedMessages.filter(msg => !existingIds.has(msg.id));
-
-    if (newMessages.length > 0) {
-      // 保存新消息到数据库
-      await messages.createMany(chatSessionId, newMessages);
+// Agent请求处理逻辑
+async function handleAgentRequest(c: any, reqMessages: any[], sessionId?: string) {
+  if (!reqMessages || !Array.isArray(reqMessages)) {
+    return c.json({ error: '无效的消息格式' }, { status: 400 });
+  }
+  
+  console.log('收到Agent请求，消息数量:', reqMessages.length);
+  
+  // 保存会话和消息到数据库
+  let chatSessionId = sessionId;
+  
+  if (!chatSessionId) {
+    // 创建新会话
+    const newSession = await sessions.create();
+    chatSessionId = newSession.id;
+  } else {
+    // 验证会话是否存在
+    const existingSession = await sessions.getById(chatSessionId);
+    if (!existingSession) {
+      return c.json({ error: '指定的会话不存在' }, { status: 404 });
+    }
+  }
+  
+  // 格式化消息，确保日期是Date对象
+  const formattedMessages: Message[] = reqMessages.map((msg: any) => {
+    // 确保创建日期是有效的Date对象
+    let createdAt: Date;
+    if (msg.createdAt) {
+      createdAt = new Date(msg.createdAt);
+    } else {
+      createdAt = new Date();
     }
     
-    // 在API请求中，确保所有消息内容都是字符串，这对OpenAI API是必要的
-    const apiMessages = formattedMessages.map(msg => {
-      if (typeof msg.content === 'string') {
-        return msg;
-      } else {
-        // 如果msg.content是数组，则返回原始对象，让OpenAI API处理
-        return msg;
-      }
-    });
-    
-    // 获取AI响应并直接返回
-    const aiStream = await generateChatResponse(apiMessages);
-    
-    // 手动设置响应头
-    c.header('Content-Type', 'text/plain; charset=utf-8');
-    c.header('Transfer-Encoding', 'chunked');
-    
-    // 收集完整响应
-    let fullResponse = '';
-    
-    // 流式响应处理
-    return c.body(
-      new ReadableStream({
-        async start(controller) {
-          try {
-            for await (const chunk of aiStream) {
-              const content = chunk.choices[0]?.delta?.content || '';
-              if (content) {
-                fullResponse += content;
-                controller.enqueue(new TextEncoder().encode(content));
-              }
-            }
-            controller.close();
-            
-            // 响应完成后，保存AI回复
-            if (fullResponse) {
-              const aiMessage: Message = {
-                id: uuidv4(),
-                role: 'assistant',
-                content: fullResponse,
-                createdAt: new Date(),
-              };
-              await messages.create(chatSessionId, aiMessage.role, aiMessage.content);
-              
-              // 如果是新会话且没有标题，使用第一条用户消息作为标题
-              const session = await sessions.getById(chatSessionId);
-              if (session && !session.title) {
-                const userMsg = formattedMessages.find(m => m.role === 'user');
-                if (userMsg) {
-                  // 提取文本内容作为标题
-                  let titleText = '';
-                  if (typeof userMsg.content === 'string') {
-                    titleText = userMsg.content;
-                  } else if (Array.isArray(userMsg.content)) {
-                    // 尝试从复杂消息中提取文本部分
-                    const textContent = userMsg.content.find(c => c.type === 'text');
-                    if (textContent && textContent.text) {
-                      titleText = textContent.text;
-                    }
-                  }
-                  
-                  const title = titleText.length > 20 
-                    ? titleText.substring(0, 20) + '...' 
-                    : titleText;
-                  await sessions.update(chatSessionId, title);
-                }
-              }
-            }
-          } catch (error) {
-            console.error('Stream处理错误:', error);
-            controller.error(error);
-          }
-        }
-      })
-    );
-  } catch (error) {
-    console.error('Agent处理失败:', error);
-    return c.json({ error: '处理请求失败' }, { status: 500 });
+    return {
+      id: msg.id || uuidv4(),
+      role: msg.role,
+      content: msg.content, // 内容可以是字符串或对象，由数据库代码处理序列化
+      createdAt: createdAt,
+    };
+  });
+  
+  console.log('处理Agent请求，格式化后的消息示例:', 
+              formattedMessages.length > 0 
+              ? JSON.stringify(formattedMessages[formattedMessages.length - 1]) 
+              : '无消息');
+  
+  // 检查消息是否已存在并仅保存新消息
+  const existingMessages = await messages.getBySessionId(chatSessionId);
+  const existingIds = new Set(existingMessages.map(msg => msg.id));
+
+  // 只保存数据库中不存在的消息
+  const newMessages = formattedMessages.filter(msg => !existingIds.has(msg.id));
+
+  if (newMessages.length > 0) {
+    // 保存新消息到数据库
+    await messages.createMany(chatSessionId, newMessages);
   }
-});
+  
+  // 在API请求中，确保所有消息内容都是字符串，这对OpenAI API是必要的
+  const apiMessages = formattedMessages.map(msg => {
+    if (typeof msg.content === 'string') {
+      return msg;
+    } else {
+      // 如果msg.content是数组，则返回原始对象，让OpenAI API处理
+      return msg;
+    }
+  });
+  
+  // 获取AI响应流
+  const aiStream = await generateChatResponse(apiMessages);
+  
+  // 设置响应头
+  c.header('Content-Type', 'text/event-stream');
+  c.header('Cache-Control', 'no-cache');
+  c.header('Connection', 'keep-alive');
+  
+  // 收集完整响应
+  let fullResponse = '';
+  
+  // 创建一个可读流
+  return c.body(
+    new ReadableStream({
+      async start(controller) {
+        try {
+          // 遍历AI响应流
+          for await (const chunk of aiStream) {
+            const content = chunk.choices[0]?.delta?.content || '';
+            
+            if (content) {
+              fullResponse += content;
+              
+              // 创建SSE格式的消息
+              const message = `data: ${JSON.stringify({ content })}\n\n`;
+              controller.enqueue(new TextEncoder().encode(message));
+            }
+          }
+          
+          // 发送完成信号
+          controller.enqueue(new TextEncoder().encode(`data: [DONE]\n\n`));
+          controller.close();
+          
+          // 响应完成后，保存AI回复
+          if (fullResponse) {
+            const aiMessage: Message = {
+              id: uuidv4(),
+              role: 'assistant',
+              content: fullResponse,
+              createdAt: new Date(),
+            };
+            await messages.create(chatSessionId, aiMessage.role, aiMessage.content);
+            
+            // 如果是新会话且没有标题，使用第一条用户消息作为标题
+            const session = await sessions.getById(chatSessionId);
+            if (session && !session.title) {
+              const userMsg = formattedMessages.find(m => m.role === 'user');
+              if (userMsg) {
+                // 提取文本内容作为标题
+                let titleText = '';
+                if (typeof userMsg.content === 'string') {
+                  titleText = userMsg.content;
+                } else if (Array.isArray(userMsg.content)) {
+                  // 尝试从复杂消息中提取文本部分
+                  const textContent = userMsg.content.find(c => c.type === 'text');
+                  if (textContent && textContent.text) {
+                    titleText = textContent.text;
+                  }
+                }
+                
+                const title = titleText.length > 20 
+                  ? titleText.substring(0, 20) + '...' 
+                  : titleText;
+                await sessions.update(chatSessionId, title);
+              }
+            }
+          }
+        } catch (error) {
+          console.error('Stream处理错误:', error);
+          controller.error(error);
+        }
+      }
+    })
+  );
+}
 
 // 图片上传API
 app.post('/upload', async (c) => {
